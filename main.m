@@ -1,51 +1,95 @@
-clc;close all;
-%LOAD DATA
-digitDatasetPath = fullfile('train');
-imds = imageDatastore(digitDatasetPath, ...
-    'IncludeSubfolders',true,'LabelSource','foldernames');
-%Split the data into 80% training and 20% validation
-[imdsTrain,imdsValidation] = splitEachLabel(imds,0.8,'randomized');
-%Show random images from datapath
-figure;
-perm = randperm(100,20);
-for i = 1:20
-    subplot(4,5,i);
-    imshow(imds.Files{perm(i)});
+clc
+clear all
+close all
+
+doTraining = true;
+
+if ~doTraining
+    preTrainedDetector = downloadPretrainedYOLOv3Detector();    
 end
-%Image size of model input layer
-inputSize = lgraph.Layers(1).InputSize;
-%augmentation 
-augmenter = imageDataAugmenter( ...
-    'RandXReflection' , true , ...
-    'RandYReflection' , true );
-%resize the training and test images and operations to perform on the training images
-augimdsTrain      = augmentedImageDatastore([inputSize(1),inputSize(2),3],imdsTrain,'DataAugmentation',augmenter);
-augimdsValidation = augmentedImageDatastore([inputSize(1),inputSize(2),3],imdsValidation);
-%Training Options
-options = trainingOptions('sgdm', ...
-    'MiniBatchSize',5, ...
-    'MaxEpochs',50, ...
-    'ValidationFrequency',100, ...
-    'ValidationData',augimdsValidation, ...
-    'Verbose',false, ...
-    'Plots','training-progress');
-%Train Model
-net = trainNetwork(augimdsTrain,lgraph,options);
-%Validation Accuracy
-[YPred,scores] = classify(net,augimdsValidation);
-accuracy = mean(YPred == imdsValidation.Labels);
-%Confusion Matrix
-plotconfusion(imdsValidation.Labels,YPred)
-%Predict random images
-idx = randperm(numel(imdsValidation.Files),16);
+
+data = load('gTruth.mat');
+covidDataset = data.gTruth.LabelData;
+covidDataset.imageFilename = data.gTruth.DataSource.Source;
+
+head(covidDataset)
+covidDataset.imageFilename = fullfile(covidDataset.imageFilename);
+% split the data into training and test set
+rng(0);
+shuffledIndices = randperm(height(covidDataset));
+idx = floor(0.6 * length(shuffledIndices));
+trainingDataTbl = covidDataset(shuffledIndices(1:idx), :);
+testDataTbl = covidDataset(shuffledIndices(idx+1:end), :);
+
+imdsTrain = imageDatastore(trainingDataTbl.imageFilename);
+imdsTest = imageDatastore(testDataTbl.imageFilename);
+
+bldsTrain = boxLabelDatastore(trainingDataTbl(:, 1:5));
+bldsTest = boxLabelDatastore(testDataTbl(:, 1:5));
+
+trainingData = combine(imdsTrain, bldsTrain);
+testData = combine(imdsTest, bldsTest);
+
+%augment training data
+augmentedTrainingData = transform(trainingData, @augmentData);
+augmentedData = cell(4,1);
+for k = 1:4
+    data = read(augmentedTrainingData);
+    augmentedData{k} = insertShape(data{1,1}, 'Rectangle', data{1,2});
+    reset(augmentedTrainingData);
+end
 figure
-for i = 1:16
-    subplot(4,4,i)
-    I = readimage(imdsValidation,idx(i));
-    imshow(I)
-    label = YPred(idx(i));
-    title(string(label) + ", " + num2str(100*max(scores(idx(i),:)),3) + "%");
+montage(augmentedData, 'BorderSize', 10)
+
+networkInputSize = [227 227 3];
+
+rng(0)
+trainingDataForEstimation = transform(trainingData, @(data)preprocessData(data, networkInputSize));
+numAnchors = 5;
+[anchors, meanIoU] = estimateAnchorBoxes(trainingDataForEstimation, numAnchors)
+
+area = anchors(:, 1).*anchors(:, 2);
+[~, idx] = sort(area, 'descend');
+anchors = anchors(idx, :);
+anchorBoxes = {anchors(1:3,:)
+    anchors(4:5,:)
+    };
+%pre trained network
+baseNetwork = squeezenet;
+classNames = trainingDataTbl.Properties.VariableNames(1:5);
+
+yolov3Detector = yolov3ObjectDetector(baseNetwork, classNames, anchorBoxes, 'DetectionNetworkSource', {'fire9-concat', 'fire5-concat'});
+
+% ERROR - preprocessing
+preprocessedTrainingData = transform(augmentedTrainingData, @(data)preprocess(yolov3Detector, data));
+data = read(preprocessedTrainingData);
+I = data{1,1};
+bbox = data{1,2};
+annotatedImage = insertShape(I, 'Rectangle', bbox);
+annotatedImage = imresize(annotatedImage,2);
+figure
+imshow(annotatedImage)
+reset(preprocessedTrainingData);
+
+numEpochs = 80;
+miniBatchSize = 8;
+learningRate = 0.001;
+warmupPeriod = 1000;
+l2Regularization = 0.0005;
+penaltyThreshold = 0.5;
+velocity = [];
+
+%train model
+if canUseParallelPool
+   dispatchInBackground = true;
+else
+   dispatchInBackground = false;
 end
-%Save Model
-mobilenet100 = net;
-save mobilenet100
+
+mbqTrain = minibatchqueue(preprocessedTrainingData, 2,...
+        "MiniBatchSize", miniBatchSize,...
+        "MiniBatchFcn", @(images, boxes, labels) createBatchData(images, boxes, labels, classNames), ...
+        "MiniBatchFormat", ["SSCB", ""],...
+        "DispatchInBackground", dispatchInBackground,...
+        "OutputCast", ["", "double"]);
+
