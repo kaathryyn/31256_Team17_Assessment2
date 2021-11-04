@@ -8,12 +8,12 @@ if ~doTraining
     preTrainedDetector = downloadPretrainedYOLOv3Detector();    
 end
 
-data = load('gTruth.mat');
+data = load("gTruth.mat");
 covidDataset = data.gTruth.LabelData;
 covidDataset.imageFilename = data.gTruth.DataSource.Source;
-
 head(covidDataset)
 covidDataset.imageFilename = fullfile(covidDataset.imageFilename);
+
 % split the data into training and test set
 rng(0);
 shuffledIndices = randperm(height(covidDataset));
@@ -21,6 +21,7 @@ idx = floor(0.6 * length(shuffledIndices));
 trainingDataTbl = covidDataset(shuffledIndices(1:idx), :);
 testDataTbl = covidDataset(shuffledIndices(idx+1:end), :);
 
+% Creating datastores for image and label data
 imdsTrain = imageDatastore(trainingDataTbl.imageFilename);
 imdsTest = imageDatastore(testDataTbl.imageFilename);
 
@@ -92,4 +93,3 @@ mbqTrain = minibatchqueue(preprocessedTrainingData, 2,...
         "MiniBatchFormat", ["SSCB", ""],...
         "DispatchInBackground", dispatchInBackground,...
         "OutputCast", ["", "double"]);
-
