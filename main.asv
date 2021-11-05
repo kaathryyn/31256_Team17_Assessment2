@@ -69,6 +69,10 @@ I = data{1,1};
 bbox = data{1,2};
 annotatedImage = insertShape(I, 'Rectangle', bbox);
 annotatedImage = imresize(annotatedImage,3);
+I2 = data{1,5};
+bbox = data{,5};
+annotatedImage = insertShape(I2, 'Rectangle', bbox);
+annotatedImage = imresize(annotatedImage,3);
 figure
 imshow(annotatedImage)
 %reset(preprocessedTrainingData);

@@ -1,4 +1,3 @@
-%augment Data function
 function data = augmentData(A)
 % Apply random horizontal flipping, and random X/Y scaling. Boxes that get
 % scaled outside the bounds are clipped if the overlap is above 0.25. Also,
